@@ -188,4 +188,4 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 ## Acknowledgements
 
 This work uses the ROP screening dataset collected at the **University Hospital Ostrava, Czech Republic**, published by Timkovič et al. (*Scientific Data*, 2024, DOI: [10.1038/s41597-024-03409-7](https://doi.org/10.1038/s41597-024-03409-7)).
-Experiments were conducted on the **Karolinska HPC cluster** (Karolinska Institutet, Sweden).
+Experiments were conducted on the **Karolina HPC cluster** (IT4innovations national supercomputing center, VSB-TUO, Czech Republic).
