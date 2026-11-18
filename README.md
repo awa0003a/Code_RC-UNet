@@ -1,4 +1,3 @@
-RC-UNet: Geometry-Aware Optic Disc Segmentation for Retinopathy of Prematurity
 # RC-UNet: Geometry-Aware Optic Disc Segmentation for Retinopathy of Prematurity
 
 <p align="center">
@@ -15,11 +14,23 @@ RC-UNet: Geometry-Aware Optic Disc Segmentation for Retinopathy of Prematurity
 ## Highlights
 
 - **Exact geometric constraints** — radial kernels enforce ring weight sharing and disk-only support via `ring_basis()`; a built-in `geometry_audit()` verifies constraints at runtime
-- **Three operating modes** — `radial` (constrained convolution + standard attention), `circular` (standard convolution + constrained attention), `combined` (both constraints active)
-- **Uncertainty-aware inference** — MC-Dropout (Dropout2d) at the bottleneck enables predictive entropy and variance maps
+- **Three operating modes** — `radial` (constrained convolution + standard attention), `combined` (standard convolution + constrained attention), `circular` (both constraints active)
+- **Uncertainty-aware inference** — MC-Dropout (`Dropout2d`) at the bottleneck enables predictive entropy and variance maps
 - **Multi-camera support** — trained and evaluated across Clarity RetCam 3, RetCam Envision, and Phoenix ICON
-- **Patient-level data splitting** — no patient leakage across train/validation/test splits
-- **Single-file design** — entire pipeline in one `.py` file; no argparse, edit the config block at the top
+- **Patient-level data splitting** — no patient leakage across train/validation/test splits; subject IDs inferred from filename prefixes or supplied via CSV
+- **Modular design** — pipeline split across four files for readability and maintainability
+
+---
+
+## Repository Structure
+
+```
+RC_UNet_modular_swapped/
+├── model.py                 # GeometryRCUNet, RadialConvBlock, CircularAttentionGate, ring_basis()
+├── dataset_preprocess.py    # OpticDiscDataset, patient-grouped splitting, augmentation
+├── utils.py                 # geometry_audit(), segmentation_loss(), evaluate(), HD95/ASSD
+└── train.py                 # Configuration block, training loop, threshold tuning, plots
+```
 
 ---
 
@@ -30,9 +41,9 @@ Input (3 × H × W)
     │
     ├── Encoder 1: ConvBlock          (3 → β)
     ├── Encoder 2: ConvBlock          (β → 2β)
-    ├── Encoder 3: RadialConvBlock    (2β → 4β)   ← geometric constraint
-    └── Bottleneck: RadialConvBlock   (4β → 8β)   ← geometric constraint
-                 + CircularAttentionGate           ← ring-constrained spatial gate
+    ├── Encoder 3: RadialConvBlock    (2β → 4β)   ← geometric constraint (radial / circular modes)
+    └── Bottleneck: RadialConvBlock   (4β → 8β)   ← geometric constraint (radial / circular modes)
+                 + CircularAttentionGate           ← ring-constrained spatial gate (combined / circular modes)
                  + MC-Dropout2d
     ┌── Decoder 3: ConvBlock + skip   (8β → 4β)
     ├── Decoder 2: ConvBlock + skip   (4β → 2β)
@@ -44,15 +55,29 @@ Base channel width `β = 64` (Standard). Small (`β = 32`) and Large (`β = 128`
 
 ---
 
+## Modes
+
+| Mode | Convolution | Attention | Notes |
+|------|-------------|-----------|-------|
+| `radial` | RadialConvBlock (constrained) | OriginalChannelSpatialAttention (standard) | Radial constraint only |
+| `combined` | OriginalMultiScaleDepthwiseBlock (standard) | CircularAttentionGate (constrained) | Circular constraint only |
+| `circular` | RadialConvBlock (constrained) | CircularAttentionGate (constrained) | Both constraints active — corresponds to **G3** (best configuration) |
+
+> **Note on naming:** The labels `combined` and `circular` are swapped relative to earlier versions of this codebase. `circular` now refers to the fully constrained model (both radial convolution and circular attention active).
+
+---
+
 ## Dataset
 
 This code was developed and evaluated on the **Retinal Image Dataset of Infants and Retinopathy of Prematurity** (Timkovič et al., *Scientific Data*, 2024).
 
-| Split | Patients | Images |
-|-------|----------|--------|
-| Train | — | 907 |
-| Validation | — | 195 |
-| Test | — | 195 |
+| Split | Images |
+|-------|--------|
+| Train | 907 |
+| Validation | 195–199 |
+| Test | 195–204 |
+
+Split sizes vary slightly depending on whether a pre-recorded manifest (`EXISTING_SPLIT_CSV`) is used or splits are generated from scratch.
 
 - **Version 1** (6,004 images): publicly available at [figshare](https://doi.org/10.6084/m9.figshare.c.6626162.v1)
 - **Version 2** (1,297 annotated images): representative subset of 149 images from 7 patients available at [github.com/awa0003a/RC-UNET](https://github.com/awa0003a/RC-UNET_); complete dataset available from the corresponding author upon reasonable request
@@ -67,12 +92,13 @@ torch >= 2.0
 torchvision
 numpy
 Pillow
+matplotlib
 ```
 
 Install dependencies:
 
 ```bash
-pip install torch torchvision numpy Pillow
+pip install torch torchvision numpy Pillow matplotlib
 ```
 
 ---
@@ -96,28 +122,37 @@ Masks must follow the `<stem>_gt.<ext>` naming convention.
 
 **2. Edit the configuration block**
 
-Open `RC_UNet_Geometric_Improved_Single_Cell.py` and edit the top section:
+Open `train.py` and edit the top section:
 
 ```python
-DATA_DIR   = '/path/to/your/dataset'
-OUTPUT_DIR = '/path/to/output'
-MODE       = 'combined'   # 'radial' | 'circular' | 'combined'
-IMAGE_SIZE = 384
-BATCH_SIZE = 4
-EPOCHS     = 50
+DATA_DIR              = '/path/to/your/dataset'
+OUTPUT_DIR            = '/path/to/output'
+EXISTING_SPLIT_CSV    = None          # or path to a saved split manifest
+MODE                  = 'circular'    # 'radial' | 'combined' | 'circular'
+IMAGE_SIZE            = 384
+BASE_FEATURES         = 64
+BATCH_SIZE            = 4
+EPOCHS                = 50
 ```
 
 **3. Run training**
 
 ```bash
-python RC_UNet_Geometric_Improved_Single_Cell.py
+python train.py
 ```
 
-Outputs saved to `OUTPUT_DIR`:
-- `best_model.pth` — best validation Dice checkpoint
-- `metrics.csv` — per-epoch train/val metrics
-- `test_results.json` — final test set evaluation
-- `worst_predictions/` — worst-N failure cases for inspection
+Outputs are saved to `OUTPUT_DIR/<mode>/<timestamp>/`:
+
+| File | Description |
+|------|-------------|
+| `best_model.pt` | Best validation Dice checkpoint |
+| `training_history.csv` | Per-epoch train/val metrics and learning rate |
+| `test_metrics.json` | Full test set evaluation including HD95, ASSD, and geometry audit |
+| `split_manifest.csv` | Recorded train/val/test split for reproducibility |
+| `config.json` | Full configuration snapshot |
+| `training_curves.png` | Loss and Dice curves |
+| `worst_test_examples.png` | Worst-N failure cases (diagnostic) |
+| `learned_geometric_kernels.png` | Visualisation of learned radial/circular kernel weights |
 
 ---
 
@@ -133,9 +168,10 @@ Outputs saved to `OUTPUT_DIR`:
 | Dropout rate | 0.20 |
 | Early stopping patience | 20 epochs |
 | Scheduler patience | 7 epochs |
-| Loss | BCE + Soft Dice + Tversky |
+| Loss | 0.35 × BCE + 0.40 × Soft Dice + 0.25 × Tversky |
 | Normalisation | ImageNet (mean/std) |
 | Seed | 42 |
+| Threshold tuning | Validation-based grid search over {0.30 … 0.70} |
 
 ---
 
@@ -144,20 +180,30 @@ Outputs saved to `OUTPUT_DIR`:
 After training, verify that all geometric constraints hold:
 
 ```python
+from utils import geometry_audit
 report = geometry_audit(model)
 # Raises AssertionError if any constraint is violated
-# Returns per-layer report of ring structure, disk support, and symmetry
+# Returns per-layer report: ring structure, disk support, rotational and reflection symmetry
 ```
+
+The audit checks:
+- **Disk support** — no weight outside the circular kernel mask
+- **Rotational symmetry** — 90° rotation invariance of effective weights
+- **Reflection symmetry** — horizontal flip invariance of effective weights
 
 ---
 
-## Modes
+## Patient-Level Splitting
 
-| Mode | Convolution | Attention |
-|------|-------------|-----------|
-| `radial` | RadialConvBlock (constrained) | Standard channel-spatial |
-| `circular` | MS-DWBlock (unconstrained) | CircularAttentionGate (constrained) |
-| `combined` | RadialConvBlock (constrained) | CircularAttentionGate (constrained) |
+Subject identity is inferred automatically from filename prefixes (e.g. `pacient_001_serie_...`) or supplied via a CSV with columns `image_name, patient_id`. A saved `split_manifest.csv` can be passed as `EXISTING_SPLIT_CSV` to reproduce an exact split across runs.
+
+```python
+PATIENT_CSV          = None      # or '/path/to/patient_ids.csv'
+GROUP_FROM_FILENAMES = True      # infer subject IDs from filename prefixes
+EXISTING_SPLIT_CSV   = None      # or '/path/to/split_manifest.csv'
+```
+
+> A runtime warning is raised when subject IDs are inferred from filenames. Verify the grouping before publication.
 
 ---
 
@@ -187,4 +233,4 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 ## Acknowledgements
 
 This work uses the ROP screening dataset collected at the **University Hospital Ostrava, Czech Republic**, published by Timkovič et al. (*Scientific Data*, 2024, DOI: [10.1038/s41597-024-03409-7](https://doi.org/10.1038/s41597-024-03409-7)).
-Experiments were conducted on the **Karolina HPC cluster** (IT4innovations national supercomputing center, VSB-TUO, Czech Republic).
+Experiments were conducted on the **Karolina HPC cluster** (IT4Innovations National Supercomputing Center, VSB-TUO, Czech Republic).
